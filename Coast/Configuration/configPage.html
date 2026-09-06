@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Coast Plugin</title>
+</head>
+<body>
+    <div id="CoastPluginConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+                <h1>Coast Plugin</h1>
+                <p>Optional Jellyfin-side enhancements for the Coast web app. This plugin does not modify Jellyfin Web.</p>
+                <form id="CoastPluginConfigForm">
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="EnableTrailerCrop" type="checkbox" is="emby-checkbox">
+                            <span>Enable intelligent trailer crop</span>
+                        </label>
+                        <div class="fieldDescription">Briefly analyzes local trailer streams to detect encoded black bars. Results are cached in memory.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="FfmpegPath">FFmpeg executable override</label>
+                        <input id="FfmpegPath" type="text" is="emby-input" placeholder="Use Jellyfin's configured FFmpeg">
+                        <div class="fieldDescription">Leave empty to use Jellyfin's configured FFmpeg executable.</div>
+                    </div>
+                    <button is="emby-button" type="submit" class="raised button-submit block emby-button"><span>Save</span></button>
+                </form>
+            </div>
+        </div>
+        <script>
+            (function () {
+                const pluginId = 'b08ee402-69a2-4181-9f49-ed92bc9dc640';
+                const page = document.querySelector('#CoastPluginConfigPage');
+                page.addEventListener('pageshow', async function () {
+                    Dashboard.showLoadingMsg();
+                    const config = await ApiClient.getPluginConfiguration(pluginId);
+                    page.querySelector('#EnableTrailerCrop').checked = config.EnableTrailerCrop;
+                    page.querySelector('#FfmpegPath').value = config.FfmpegPath || '';
+                    Dashboard.hideLoadingMsg();
+                });
+                page.querySelector('#CoastPluginConfigForm').addEventListener('submit', async function (event) {
+                    event.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    const config = await ApiClient.getPluginConfiguration(pluginId);
+                    config.EnableTrailerCrop = page.querySelector('#EnableTrailerCrop').checked;
+                    config.FfmpegPath = page.querySelector('#FfmpegPath').value.trim();
+                    const result = await ApiClient.updatePluginConfiguration(pluginId, config);
+                    Dashboard.processPluginConfigurationUpdateResult(result);
+                });
+            }());
+        </script>
+    </div>
+</body>
+</html>
