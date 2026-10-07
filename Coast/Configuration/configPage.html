@@ -18,6 +18,13 @@
                         </label>
                         <div class="fieldDescription">Briefly analyzes local trailer streams to detect encoded black bars. Results are cached in memory.</div>
                     </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="EnableLiveUpdates" type="checkbox" is="emby-checkbox">
+                            <span>Enable Coast live updates</span>
+                        </label>
+                        <div class="fieldDescription">Authenticated administrators can read library and user changes and active streams. Coast retains periodic reconciliation if the feed restarts or is unavailable.</div>
+                    </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="FfmpegPath">FFmpeg executable override</label>
                         <input id="FfmpegPath" type="text" is="emby-input" placeholder="Use Jellyfin's configured FFmpeg">
@@ -35,6 +42,7 @@
                     Dashboard.showLoadingMsg();
                     const config = await ApiClient.getPluginConfiguration(pluginId);
                     page.querySelector('#EnableTrailerCrop').checked = config.EnableTrailerCrop;
+                    page.querySelector('#EnableLiveUpdates').checked = config.EnableLiveUpdates;
                     page.querySelector('#FfmpegPath').value = config.FfmpegPath || '';
                     Dashboard.hideLoadingMsg();
                 });
@@ -43,6 +51,7 @@
                     Dashboard.showLoadingMsg();
                     const config = await ApiClient.getPluginConfiguration(pluginId);
                     config.EnableTrailerCrop = page.querySelector('#EnableTrailerCrop').checked;
+                    config.EnableLiveUpdates = page.querySelector('#EnableLiveUpdates').checked;
                     config.FfmpegPath = page.querySelector('#FfmpegPath').value.trim();
                     const result = await ApiClient.updatePluginConfiguration(pluginId, config);
                     Dashboard.processPluginConfigurationUpdateResult(result);

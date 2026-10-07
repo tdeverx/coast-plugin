@@ -1,0 +1,30 @@
+using Jellyfin.Plugin.Coast.Updates;
+
+static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+var journal = new ChangeJournal(3);
+var initial = journal.Read(null, 0);
+Check(initial.Reset && initial.Changes.Count == 0, "New clients must reconcile.");
+var item = Guid.NewGuid(); var user = Guid.NewGuid();
+journal.Add("user-data", item, user);
+var first = journal.Read(initial.Epoch, initial.Cursor);
+Check(!first.Reset && first.Changes.Count == 1, "Valid cursors return changes.");
+for (var n = 0; n < 1000; n++) journal.Add("user-data", item, user);
+var coalesced = journal.Read(initial.Epoch, initial.Cursor);
+Check(!coalesced.Reset && coalesced.Changes.Count == 1 && coalesced.Cursor > first.Cursor, "Coalescing retains later changes without claiming loss.");
+journal.Add("item-removed", item); journal.Add("item-updated", item);
+var ordered = journal.Read(initial.Epoch, initial.Cursor, 1);
+Check(ordered.More && ordered.Changes[0].Kind == "user-data", "Partial batches remain in sequence order.");
+var second = journal.Read(ordered.Epoch, ordered.Cursor);
+Check(!second.More && second.Changes.Select(x => x.Kind).SequenceEqual(new[]{"item-removed", "item-updated"}), "Deletion and re-addition remain ordered.");
+journal.Add("user-updated", userId: Guid.NewGuid());
+Check(journal.Read(initial.Epoch, 0).Reset, "Eviction requests reconciliation.");
+Check(!journal.Read(second.Epoch, second.Cursor).Reset, "Caught-up consumers survive eviction.");
+Check(journal.Read(second.Epoch, long.MaxValue).Reset, "Future cursors cannot silently skip events.");
+journal.Reset();
+Check(journal.Read(second.Epoch, second.Cursor).Reset, "Configuration changes reset the epoch.");
+var reset = journal.Read(null, 0);
+Parallel.For(0, 10000, n => journal.Add("item-updated", Guid.NewGuid()));
+Check(journal.Read(reset.Epoch, reset.Cursor).Reset, "Concurrent overflow is reported.");
+var caughtUp = journal.Read(null, 0);
+Check(!journal.Read(caughtUp.Epoch, caughtUp.Cursor).More, "An acknowledged reset catches up.");
+Console.WriteLine("11 journal checks passed (coalescing, bounded retention, paging, reset, concurrency).");
