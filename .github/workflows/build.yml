@@ -18,3 +18,4 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - run: dotnet build Coast.slnx --configuration Release
+      - run: dotnet run --project Tests/Coast.Journal.Tests.csproj --configuration Release

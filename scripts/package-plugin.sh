@@ -4,7 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 output_dir="$project_root/dist"
 publish_dir="$output_dir/publish"
-version="0.2.0.0"
+version="0.3.0.0"
 
 rm -rf "$publish_dir"
 mkdir -p "$publish_dir"

@@ -1,16 +1,17 @@
 ---
 name: "Coast Plugin"
 guid: "b08ee402-69a2-4181-9f49-ed92bc9dc640"
-version: "0.2.0.0"
-targetAbi: "12.0.0.0"
+version: "0.3.0.0"
+targetAbi: "12.1.0.0"
 framework: "net10.0"
 overview: "Optional Jellyfin-side enhancements for Coast."
 description: >
   Coast Plugin adds authenticated, server-assisted trailer black-bar detection
-  for the Coast web app without modifying or injecting into Jellyfin Web.
+  and incremental library, user-data, permission and stream updates for Coast
+  without modifying or injecting into Jellyfin Web.
 category: "General"
 owner: "tdeverx"
 artifacts:
 - "Jellyfin.Plugin.Coast.dll"
 changelog: >
-  First standalone companion release with authenticated trailer crop analysis.
+  Administrator-authenticated change feed for incremental library, user-data and permission updates, with sanitized current streams and explicit restart/gap reconciliation. Trailer crop remains available.
