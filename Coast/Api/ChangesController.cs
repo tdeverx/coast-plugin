@@ -39,6 +39,7 @@ public sealed class ChangesController : ControllerBase
             s.UserName,
             s.Client,
             s.DeviceName,
+            s.DeviceId,
             NowPlayingItem = new
             {
                 Id = s.NowPlayingItem.Id.ToString("N"),
