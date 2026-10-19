@@ -1,5 +1,7 @@
 using Jellyfin.Plugin.Coast.Updates;
 
+if (await TrailerCropChecks.RunChildAsync()) return;
+
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
 var journal = new ChangeJournal(3);
 var initial = journal.Read(null, 0);
@@ -28,3 +30,4 @@ Check(journal.Read(reset.Epoch, reset.Cursor).Reset, "Concurrent overflow is rep
 var caughtUp = journal.Read(null, 0);
 Check(!journal.Read(caughtUp.Epoch, caughtUp.Cursor).More, "An acknowledged reset catches up.");
 Console.WriteLine("11 journal checks passed (coalescing, bounded retention, paging, reset, concurrency).");
+await TrailerCropChecks.RunAsync();

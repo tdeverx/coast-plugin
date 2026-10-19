@@ -16,7 +16,7 @@ namespace Jellyfin.Plugin.Coast.Api;
 [Route("Coast")]
 public sealed partial class TrailerCropController : ControllerBase
 {
-    private static readonly ConcurrentDictionary<string, Task<CropResult?>> CropCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Lazy<Task<CropResult?>>> CropCache = new(StringComparer.Ordinal);
     private readonly IMediaEncoder _mediaEncoder;
     private readonly ILogger<TrailerCropController> _logger;
 
@@ -47,14 +47,15 @@ public sealed partial class TrailerCropController : ControllerBase
         }
 
         var source = $"{Request.Scheme}://{Request.Host}{Request.PathBase}/Videos/{itemId}/stream?Static=true";
-        var task = CropCache.GetOrAdd(itemId, _ => AnalyzeAsync(itemId, authorization, source));
+        var selected = CropCache.GetOrAdd(itemId, _ => new Lazy<Task<CropResult?>>(
+            () => AnalyzeAsync(itemId, authorization, source), LazyThreadSafetyMode.ExecutionAndPublication));
         try
         {
-            return Ok(new CropResponse(await task.ConfigureAwait(false), null));
+            return Ok(new CropResponse(await selected.Value.ConfigureAwait(false), null));
         }
         catch (Exception exception)
         {
-            CropCache.TryRemove(itemId, out _);
+            CropCache.TryRemove(new KeyValuePair<string, Lazy<Task<CropResult?>>>(itemId, selected));
             _logger.LogWarning(exception, "Coast could not analyze trailer crop for item {ItemId}.", itemId);
             return StatusCode(StatusCodes.Status502BadGateway, new CropResponse(null, "analysis_failed"));
         }
