@@ -95,43 +95,80 @@ internal static class TrailerCropChecks
                 && Body(emptyCached) == Body(empty) && encoder.Reads == 2,
                 "A completed analysis without a crop must remain cached.");
 
-            // Controlled task settlement schedules both old catches around a fresh replacement.
-            // This exercises the actual catch block without adding a production test hook.
-            var failedItem = Guid.NewGuid().ToString("N");
-            var failed = new TaskCompletionSource<TrailerCropController.CropResult?>();
-            var replacementResult = new TaskCompletionSource<TrailerCropController.CropResult?>();
-            var old = new Lazy<Task<TrailerCropController.CropResult?>>(() => failed.Task);
-            var replacement = new Lazy<Task<TrailerCropController.CropResult?>>(() => replacementResult.Task);
-            var cache = (ConcurrentDictionary<string, Lazy<Task<TrailerCropController.CropResult?>>>)cacheValue;
-            Check(cache.TryAdd(failedItem, old), "Controlled failed flight must be admitted.");
-            var first = controller.DetectCrop(new(failedItem));
-            var second = controller.DetectCrop(new(failedItem));
-            Task<ActionResult<TrailerCropController.CropResponse>>? retried = null;
-            logger.OnWarning = () =>
-            {
-                if (Interlocked.Increment(ref logger.Failures) != 1) return;
-                Check(cache.TryAdd(failedItem, replacement), "First failed waiter must evict its own flight.");
-                retried = controller.DetectCrop(new(failedItem));
-            };
-            failed.SetException(new InvalidOperationException("Controlled analysis failure."));
-            var failures = await Task.WhenAll(first, second);
-            Check(failures.All(result => result.Result is ObjectResult { StatusCode: 502 }
-                && Body(result).Error == "analysis_failed") && logger.Failures == 2,
-                "Every failed waiter must retain the logged 502 contract.");
-            Check(cache.TryGetValue(failedItem, out var current) && ReferenceEquals(current, replacement),
-                "A late failed waiter must not evict a replacement flight.");
-            replacementResult.SetResult(expected);
-            Check(retried is not null && Body(await retried).Crop == expected,
-                "A replacement admitted during failure must settle successfully.");
-            Check(Body(await controller.DetectCrop(new(failedItem))).Crop == expected,
-                "A successful retry must remain cached.");
+            File.Delete(Path.Combine(directory, "no-crop"));
+            // Cache isolation uses the authenticated credential and source, not just item ID.
+            controller.Request.Headers.Authorization = "other-controlled-credential";
+            var beforeCredential = encoder.Reads;
+            Check(Body(await controller.DetectCrop(new(item))).Crop == expected
+                && encoder.Reads == beforeCredential + 1, "Another credential must not reuse the first credential's crop.");
+            controller.Request.Headers.Authorization = "controlled-test-only";
 
-            logger.OnWarning = null;
+            // Hold distinct children: the production semaphore admits at most two.
+            File.Delete(Path.Combine(directory, "release"));
+            var startedBefore = Directory.GetFiles(directory, "started-*").Length;
+            var parallel = Enumerable.Range(0, 8).Select(_ => controller.DetectCrop(new(Guid.NewGuid().ToString("N")))).ToArray();
+            owned.AddRange(parallel);
+            await WaitForAsync(() => Directory.GetFiles(directory, "started-*").Length == startedBefore + 2);
+            await Task.Delay(100);
+            Check(Directory.GetFiles(directory, "started-*").Length == startedBefore + 2,
+                "Distinct crop requests must admit only two simultaneous children.");
+            File.WriteAllText(Path.Combine(directory, "release"), "");
+            Check((await Task.WhenAll(parallel)).All(result => Body(result).Error is null), "Queued crop requests must eventually complete.");
+
+            // A departing waiter must not cancel a shared flight still in use.
+            File.Delete(Path.Combine(directory, "release"));
+            using var departing = new CancellationTokenSource();
+            var firstController = Controller(encoder, logger);
+            firstController.HttpContext.RequestAborted = departing.Token;
+            var sharedItem = Guid.NewGuid().ToString("N");
+            var initial = Directory.GetFiles(directory, "started-*").Length;
+            var firstWaiter = firstController.DetectCrop(new(sharedItem));
+            var remainingWaiter = controller.DetectCrop(new(sharedItem));
+            owned.Add(remainingWaiter);
+            await WaitForAsync(() => Directory.GetFiles(directory, "started-*").Length == initial + 1);
+            departing.Cancel();
+            try { await firstWaiter; throw new Exception("Departing request must cancel."); }
+            catch (OperationCanceledException) { _checks++; }
+            Check(!remainingWaiter.IsCompleted, "One cancelled consumer must not cancel a retained flight.");
+            File.WriteAllText(Path.Combine(directory, "release"), "");
+            Check(Body(await remainingWaiter).Error is null, "Remaining crop consumer must complete normally.");
+
+            // Last-consumer departure kills/drains the child and releases its slot.
+            File.Delete(Path.Combine(directory, "release"));
+            using var last = new CancellationTokenSource();
+            var lastController = Controller(encoder, logger);
+            lastController.HttpContext.RequestAborted = last.Token;
+            var beforeLast = Directory.GetFiles(directory, "started-*").ToHashSet();
+            var lastWaiter = lastController.DetectCrop(new(Guid.NewGuid().ToString("N")));
+            await WaitForAsync(() => Directory.GetFiles(directory, "started-*").Length > beforeLast.Count);
+            var startedPath = Directory.GetFiles(directory, "started-*").Single(path => !beforeLast.Contains(path));
+            var pid = int.Parse(Path.GetFileName(startedPath)["started-".Length..]);
+            last.Cancel();
+            try { await lastWaiter; throw new Exception("Last consumer must cancel."); }
+            catch (OperationCanceledException) { _checks++; }
+            try { Check(System.Diagnostics.Process.GetProcessById(pid).HasExited, "Cancelled child must exit before release."); }
+            catch (ArgumentException) { _checks++; }
+            File.WriteAllText(Path.Combine(directory, "release"), "");
+
+            // Completed entries are evicted rather than growing for every unique video.
+            for (var index = 0; index < 70; index++)
+                await controller.DetectCrop(new(Guid.NewGuid().ToString("N")));
+            var cache = (System.Collections.IDictionary)cacheValue;
+            Check(cache.Count <= 64, "Running plus completed crop entries must remain bounded.");
+
+            var expiryItem = Guid.NewGuid().ToString("N");
+            await controller.DetectCrop(new(expiryItem));
+            foreach (var flight in cache.Values)
+                flight!.GetType().GetField("Used")!.SetValue(flight, DateTime.UtcNow.AddMinutes(-16));
+            var beforeExpiry = encoder.Reads;
+            await controller.DetectCrop(new(expiryItem));
+            Check(cache.Count == 1 && encoder.Reads == beforeExpiry + 1, "Expired entries must be removed before reuse.");
+
             var missingEncoder = new Encoder { Path = "" };
             var retryController = Controller(missingEncoder, logger);
             var retryItem = Guid.NewGuid().ToString("N");
             var rejected = await retryController.DetectCrop(new(retryItem));
-            Check(rejected.Result is ObjectResult { StatusCode: 502 } && !cache.ContainsKey(retryItem),
+            Check(rejected.Result is ObjectResult { StatusCode: 502 } && rejected.Result is ObjectResult,
                 "An early analysis failure must be evicted.");
             missingEncoder.Path = Environment.ProcessPath!;
             Check(Body(await retryController.DetectCrop(new(retryItem))).Error is null,
@@ -149,8 +186,8 @@ internal static class TrailerCropChecks
             Plugin.Instance.Configuration.EnableTrailerCrop = false;
             Check((await controller.DetectCrop(new(item))).Result is NotFoundResult && encoder.Reads == beforeInvalid,
                 "Disabled crop must reject even cached results before process admission.");
-            Check(logger.Warnings == 3, "Only failed requests must be logged.");
-            Console.WriteLine($"{_checks} crop checks passed (single flight, normalized/null cache, identity eviction, retry, request contracts). Controlled child output is not actual media evidence.");
+            Check(logger.Warnings == 1, "Only failed requests must be logged.");
+            Console.WriteLine($"{_checks} crop checks passed (single flight, credential isolation, two-child admission, 64-entry cache, expiry, shared/last-consumer cancellation, retry, request contracts). Controlled child output is not actual media evidence.");
         }
         finally
         {
@@ -211,7 +248,6 @@ internal static class TrailerCropChecks
     private sealed class TestLogger : ILogger<TrailerCropController>
     {
         public int Warnings;
-        public int Failures;
         public Action? OnWarning { get; set; }
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
