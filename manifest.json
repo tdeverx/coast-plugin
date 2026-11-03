@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "0.3.1.0",
+        "changelog": "Recheck current item access and playback permission before returning crop data. Bound FFmpeg analysis, cache size and cancellation cleanup.",
+        "targetAbi": "12.1.0.0",
+        "sourceUrl": "https://github.com/tdeverx/coast-plugin/releases/download/v0.3.1.0/Jellyfin.Plugin.Coast_0.3.1.0.zip",
+        "checksum": "f39d0bdcceb13881ccc621a25c3f2a05",
+        "timestamp": "2026-11-03T11:47:05Z"
+      },
+      {
         "version": "0.3.0.0",
         "changelog": "Administrator-only incremental change feed, sanitized current streams, bounded coalescing and explicit restart/gap reconciliation. Existing trailer crop analysis is retained.",
         "targetAbi": "12.1.0.0",

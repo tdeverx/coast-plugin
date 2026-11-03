@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Security.Claims;
+using MediaBrowser.Controller.Library;
+using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Plugin.Coast;
 using Jellyfin.Plugin.Coast.Api;
 using MediaBrowser.Controller.MediaEncoding;
@@ -11,6 +14,8 @@ internal static class TrailerCropChecks
 {
     private const string ChildDirectory = "COAST_CROP_TEST_CHILD_DIRECTORY";
     private static int _checks;
+    private static readonly AccessLibrary Library = new();
+    private static readonly AccessUsers Users = new();
 
     // The harmless child stands in for FFmpeg. It never opens a stream or contacts Jellyfin.
     public static async Task<bool> RunChildAsync()
@@ -87,12 +92,43 @@ internal static class TrailerCropChecks
             Check(Body(cached).Crop == expected && encoder.Reads == 1,
                 "Normalized IDs must retain successful analysis.");
 
+            Library.Visible = false;
+            Check((await controller.DetectCrop(new(item))).Result is NotFoundResult && encoder.Reads == 1,
+                "Library withdrawal must deny a cached crop without starting another child.");
+            Library.Visible = true;
+            Users.Current.CanPlay = false;
+            Check((await controller.DetectCrop(new(item))).Result is NotFoundResult && encoder.Reads == 1,
+                "Playback withdrawal must deny a cached crop.");
+            Users.Current.CanPlay = true;
+            Users.Current.Disabled = true;
+            Check((await controller.DetectCrop(new(item))).Result is NotFoundResult,
+                "Disabled users must not receive cached crops.");
+            Users.Current.Disabled = false;
+            var identity = controller.HttpContext.User;
+            controller.HttpContext.User = new ClaimsPrincipal();
+            Check((await controller.DetectCrop(new(item))).Result is NotFoundResult,
+                "Missing user claims must fail closed.");
+            controller.HttpContext.User = identity;
+
+            File.Delete(Path.Combine(directory, "release"));
+            var runningBefore = Directory.GetFiles(directory, "started-*").Length;
+            var pendingAccess = controller.DetectCrop(new(Guid.NewGuid().ToString("N")));
+            owned.Add(pendingAccess);
+            await WaitForAsync(() => Directory.GetFiles(directory, "started-*").Length > runningBefore);
+            Library.Visible = false;
+            File.WriteAllText(Path.Combine(directory, "release"), "");
+            Check((await pendingAccess).Result is NotFoundResult,
+                "Access withdrawn during analysis must be rechecked before returning its result.");
+            Library.Visible = true;
+            await WaitForAsync(() => Directory.GetFiles(directory, "done-*").Length == encoder.Reads);
+            var accessAnalysisReads = encoder.Reads;
+
             File.WriteAllText(Path.Combine(directory, "no-crop"), "");
             var emptyItem = Guid.NewGuid().ToString("N");
             var empty = await controller.DetectCrop(new(emptyItem));
             var emptyCached = await controller.DetectCrop(new(emptyItem));
             Check(Body(empty) == new TrailerCropController.CropResponse(null, null)
-                && Body(emptyCached) == Body(empty) && encoder.Reads == 2,
+                && Body(emptyCached) == Body(empty) && encoder.Reads == accessAnalysisReads + 1,
                 "A completed analysis without a crop must remain cached.");
 
             File.Delete(Path.Combine(directory, "no-crop"));
@@ -208,10 +244,23 @@ internal static class TrailerCropChecks
         context.Request.Host = new HostString("crop-harness.invalid");
         context.Request.PathBase = "/jellyfin";
         context.Request.Headers.Authorization = "controlled-test-only";
-        return new TrailerCropController(encoder, logger)
+        context.User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("Jellyfin-UserId", Guid.NewGuid().ToString()) }, "test"));
+        return new TrailerCropController(encoder, logger, Library, Users)
         {
             ControllerContext = new ControllerContext { HttpContext = context }
         };
+    }
+
+    private sealed class AccessLibrary : ILibraryManager
+    {
+        public bool Visible { get; set; } = true;
+        public T? GetItemById<T>(Guid id, User user) where T : class => Visible ? new MediaBrowser.Controller.Entities.Video() as T : null;
+    }
+
+    private sealed class AccessUsers : IUserManager
+    {
+        public User Current { get; } = new();
+        public User? GetUserById(Guid id) => Current;
     }
 
     private static TrailerCropController.CropResponse Body(ActionResult<TrailerCropController.CropResponse> result)
