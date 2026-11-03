@@ -3,6 +3,10 @@ using System.Text;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using Jellyfin.Data;
+using Jellyfin.Database.Implementations.Enums;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -35,12 +39,17 @@ public sealed partial class TrailerCropController : ControllerBase
     }
     private readonly IMediaEncoder _mediaEncoder;
     private readonly ILogger<TrailerCropController> _logger;
+    private readonly ILibraryManager _library;
+    private readonly IUserManager _users;
 
     /// <summary>Initializes the crop controller.</summary>
-    public TrailerCropController(IMediaEncoder mediaEncoder, ILogger<TrailerCropController> logger)
+    public TrailerCropController(IMediaEncoder mediaEncoder, ILogger<TrailerCropController> logger,
+        ILibraryManager library, IUserManager users)
     {
         _mediaEncoder = mediaEncoder;
         _logger = logger;
+        _library = library;
+        _users = users;
     }
 
     /// <summary>Analyzes an authenticated Jellyfin video stream and returns its stable crop rectangle.</summary>
@@ -61,6 +70,11 @@ public sealed partial class TrailerCropController : ControllerBase
         {
             return BadRequest(new CropResponse(null, "invalid_request"));
         }
+
+        var videoId = Guid.ParseExact(itemId, "N");
+        // Authentication alone does not authorize cached item data. Resolve current
+        // visibility and playback policy on every request, including cache hits.
+        if (!CanAccess(videoId)) return NotFound();
 
         var source = $"{Request.Scheme}://{Request.Host}{Request.PathBase}/Videos/{itemId}/stream?Static=true";
         Request.HttpContext.RequestAborted.ThrowIfCancellationRequested();
@@ -98,7 +112,10 @@ public sealed partial class TrailerCropController : ControllerBase
         }
         try
         {
-            return Ok(new CropResponse(await selected.Work.Value.WaitAsync(Request.HttpContext.RequestAborted).ConfigureAwait(false), null));
+            var crop = await selected.Work.Value.WaitAsync(Request.HttpContext.RequestAborted).ConfigureAwait(false);
+            // Permission can change while a shared analysis is running.
+            if (!CanAccess(videoId)) return NotFound();
+            return Ok(new CropResponse(crop, null));
         }
         catch (OperationCanceledException) when (Request.HttpContext.RequestAborted.IsCancellationRequested)
         {
@@ -140,6 +157,16 @@ public sealed partial class TrailerCropController : ControllerBase
                         selected.Cancellation.Dispose();
             }
         }
+    }
+
+    private bool CanAccess(Guid itemId)
+    {
+        if (!Guid.TryParse(User.FindFirst("Jellyfin-UserId")?.Value, out var userId)
+            || userId == Guid.Empty) return false;
+        var user = _users.GetUserById(userId);
+        return user is not null && !user.HasPermission(PermissionKind.IsDisabled)
+            && user.HasPermission(PermissionKind.EnableMediaPlayback)
+            && _library.GetItemById<Video>(itemId, user) is not null;
     }
 
     private async Task<CropResult?> AnalyzeAsync(string itemId, string authorization, string source, CancellationToken cancellation)
